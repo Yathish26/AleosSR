@@ -34,6 +34,16 @@ async function consumeOtp(email, otp) {
   await record.deleteOne()
 }
 
+function otpEmailHtml(code, expiryMinutes) {
+  return `
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:420px;margin:0 auto;padding:24px;color:#0f172a">
+  <div style="font-size:20px;font-weight:800;color:#1d4ed8;margin-bottom:16px">ALEOS</div>
+  <p style="margin:0 0 12px;font-size:15px">Your verification code is:</p>
+  <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#eff6ff;border-radius:12px;padding:16px;text-align:center">${code}</div>
+  <p style="margin:16px 0 0;font-size:13px;color:#64748b">This code expires in ${expiryMinutes} minutes. If you didn't request it, you can ignore this email.</p>
+</div>`
+}
+
 // POST /api/auth/otp/send  { email, purpose: 'join' | 'login' }
 export async function sendOtp(req, res) {
   const email = normalizeEmail(req.body.email)
@@ -49,11 +59,18 @@ export async function sendOtp(req, res) {
   await Otp.deleteMany({ email })
   await Otp.create({ email, code, expiresAt: new Date(Date.now() + expiryMinutes * 60 * 1000) })
 
-  await sendMail({
-    to: email,
-    subject: 'Your ALEOS verification code',
-    text: `Your ALEOS verification code is ${code}. It expires in ${expiryMinutes} minutes.`,
-  })
+  try {
+    await sendMail({
+      to: email,
+      subject: `${code} is your ALEOS verification code`,
+      text: `Your ALEOS verification code is ${code}. It expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.`,
+      html: otpEmailHtml(code, expiryMinutes),
+    })
+  } catch (err) {
+    console.error(`OTP email to ${email} failed: ${err.message}`)
+    await Otp.deleteMany({ email })
+    throw new ApiError(502, 'Could not send the OTP email right now. Please try again in a minute.')
+  }
 
   res.json({
     success: true,
