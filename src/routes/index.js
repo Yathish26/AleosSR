@@ -38,7 +38,7 @@ router.post('/auth/admin/login', adminLogin) //      { username, password }
 
 // ---------- Merchants (public) ----------
 router.get('/merchants/categories', getCategories)
-router.post('/merchants/register', registerMerchant) // { businessName, ownerName, category, email, mobile, city }
+router.post('/merchants/register', registerMerchant) // { businessName, ownerName, category, email, mobile, city, googleBusinessLink? }
 
 // ---------- Member (logged-in member) ----------
 router.get('/members/me', memberOnly, getMe)

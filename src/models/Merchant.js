@@ -30,6 +30,12 @@ const merchantSchema = new mongoose.Schema(
     },
     mobile: { type: String, required: true, unique: true, match: [/^\d{10}$/, 'Mobile must be a 10-digit number'] },
     city: { type: String, trim: true },
+    // Optional Google Business Profile / Maps link
+    googleBusinessLink: {
+      type: String,
+      trim: true,
+      match: [/^https?:\/\/\S+$/, 'Google Business link must be a valid URL starting with http:// or https://'],
+    },
     // New merchants wait for admin approval before they can issue points
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   },
