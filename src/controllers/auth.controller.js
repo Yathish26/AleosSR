@@ -44,7 +44,7 @@ function otpEmailHtml(code, expiryMinutes) {
 </div>`
 }
 
-// POST /api/auth/otp/send  { email, purpose: 'join' | 'login' }
+// POST /auth/otp/send  { email, purpose: 'join' | 'login' }
 export async function sendOtp(req, res) {
   const email = normalizeEmail(req.body.email)
   const purpose = req.body.purpose === 'login' ? 'login' : 'join'
@@ -80,7 +80,7 @@ export async function sendOtp(req, res) {
   })
 }
 
-// POST /api/auth/member/join  { name, email, mobile, referralCode, otp }
+// POST /auth/member/join  { name, email, mobile, referralCode, otp }
 export async function joinMember(req, res) {
   const email = normalizeEmail(req.body.email)
   const name = String(req.body.name || '').trim()
@@ -103,7 +103,7 @@ export async function joinMember(req, res) {
   res.status(201).json({ success: true, token: signToken(member._id, 'member'), member })
 }
 
-// POST /api/auth/member/login  { email, otp }
+// POST /auth/member/login  { email, otp }
 export async function loginMember(req, res) {
   const email = normalizeEmail(req.body.email)
   const member = await Member.findOne({ email })
@@ -113,7 +113,7 @@ export async function loginMember(req, res) {
   res.json({ success: true, token: signToken(member._id, 'member'), member })
 }
 
-// POST /api/auth/admin/login  { username, password }
+// POST /auth/admin/login  { username, password }
 // For now the admin login is fixed: ADMIN_USERNAME / ADMIN_PASSWORD from .env (no database lookup).
 export async function adminLogin(req, res) {
   const { username, password } = req.body

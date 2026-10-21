@@ -8,13 +8,13 @@ async function getCurrentMember(req) {
   return member
 }
 
-// GET /api/members/me
+// GET /members/me
 export async function getMe(req, res) {
   const member = await getCurrentMember(req)
   res.json({ success: true, member })
 }
 
-// PATCH /api/members/me  { name }
+// PATCH /members/me  { name }
 export async function updateMe(req, res) {
   const member = await getCurrentMember(req)
   if (req.body.name !== undefined) member.name = req.body.name
@@ -22,13 +22,13 @@ export async function updateMe(req, res) {
   res.json({ success: true, member })
 }
 
-// GET /api/members/me/transactions
+// GET /members/me/transactions
 export async function getMyTransactions(req, res) {
   const transactions = await Transaction.find({ member: req.user.id }).sort({ date: -1 })
   res.json({ success: true, count: transactions.length, transactions })
 }
 
-// GET /api/members/me/referrals
+// GET /members/me/referrals
 export async function getMyReferrals(req, res) {
   const member = await getCurrentMember(req)
   const referrals = await Member.find({ referredBy: member.referralCode }).select('name createdAt')

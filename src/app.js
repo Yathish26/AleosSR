@@ -12,7 +12,7 @@ app.use(express.urlencoded({ extended: true }))
 if (process.env.NODE_ENV !== 'test') app.use(morgan('dev'))
 
 app.get('/', (req, res) => res.json({ success: true, message: 'ALEOS API is running' }))
-app.use('/api', routes)
+app.use(routes)
 
 app.use(notFound)
 app.use(errorHandler)

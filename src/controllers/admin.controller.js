@@ -3,7 +3,7 @@ import Merchant from '../models/Merchant.js'
 import Transaction from '../models/Transaction.js'
 import ApiError from '../utils/ApiError.js'
 
-// GET /api/admin/stats
+// GET /admin/stats
 export async function getStats(req, res) {
   const [totalMembers, totals, totalTransactions, totalMerchants, pendingMerchants] = await Promise.all([
     Member.countDocuments(),
@@ -26,7 +26,7 @@ export async function getStats(req, res) {
   })
 }
 
-// GET /api/admin/members?search=&page=1&limit=20
+// GET /admin/members?search=&page=1&limit=20
 export async function listMembers(req, res) {
   const page = Math.max(1, Number(req.query.page) || 1)
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20))
@@ -50,7 +50,7 @@ export async function listMembers(req, res) {
   res.json({ success: true, page, limit, total, members })
 }
 
-// GET /api/admin/members/:id
+// GET /admin/members/:id
 export async function getMember(req, res) {
   const member = await Member.findById(req.params.id)
   if (!member) throw new ApiError(404, 'Member not found')
@@ -63,7 +63,7 @@ export async function getMember(req, res) {
   res.json({ success: true, member, transactions, referrals })
 }
 
-// DELETE /api/admin/members/:id
+// DELETE /admin/members/:id
 export async function deleteMember(req, res) {
   const member = await Member.findByIdAndDelete(req.params.id)
   if (!member) throw new ApiError(404, 'Member not found')

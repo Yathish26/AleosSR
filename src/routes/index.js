@@ -1,4 +1,4 @@
-// All API routes in one place. Every path below is prefixed with /api (see app.js).
+// All API routes in one place. They're mounted at the root (see app.js), e.g. GET /health.
 // The logic for each route lives in the matching file in src/controllers/.
 import { Router } from 'express'
 import mongoose from 'mongoose'

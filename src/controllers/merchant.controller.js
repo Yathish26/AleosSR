@@ -2,12 +2,12 @@ import Merchant, { MERCHANT_CATEGORIES } from '../models/Merchant.js'
 import ApiError from '../utils/ApiError.js'
 import { sendMail } from '../utils/mailer.js'
 
-// GET /api/merchants/categories
+// GET /merchants/categories
 export function getCategories(req, res) {
   res.json({ success: true, categories: MERCHANT_CATEGORIES })
 }
 
-// POST /api/merchants/register  { businessName, ownerName, category, email, mobile, city, googleBusinessLink? }
+// POST /merchants/register  { businessName, ownerName, category, email, mobile, city, googleBusinessLink? }
 export async function registerMerchant(req, res) {
   const { businessName, ownerName, category, email, mobile, city } = req.body
   // Empty string means "not provided" — store nothing rather than fail URL validation
@@ -28,14 +28,14 @@ export async function registerMerchant(req, res) {
   })
 }
 
-// GET /api/admin/merchants?status=pending
+// GET /admin/merchants?status=pending
 export async function listMerchants(req, res) {
   const filter = req.query.status ? { status: req.query.status } : {}
   const merchants = await Merchant.find(filter).sort({ createdAt: -1 })
   res.json({ success: true, count: merchants.length, merchants })
 }
 
-// PATCH /api/admin/merchants/:id/status  { status: 'approved' | 'rejected' | 'pending' }
+// PATCH /admin/merchants/:id/status  { status: 'approved' | 'rejected' | 'pending' }
 export async function updateMerchantStatus(req, res) {
   const merchant = await Merchant.findById(req.params.id)
   if (!merchant) throw new ApiError(404, 'Merchant not found')
