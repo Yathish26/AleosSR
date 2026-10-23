@@ -2,7 +2,7 @@ import 'dotenv/config'
 import app from './app.js'
 import { connectDB, disconnectDB } from './config/db.js'
 import { ensureMemberIndexes } from './models/Member.js'
-import { ensureMerchantIds } from './models/Merchant.js'
+import { ensureMerchantIds, getMasterMerchant } from './models/Merchant.js'
 
 const PORT = process.env.PORT || 5000
 
@@ -11,6 +11,7 @@ async function start() {
     await connectDB()
     await ensureMemberIndexes()
     await ensureMerchantIds()
+    await getMasterMerchant()
     const server = app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`))
 
     const shutdown = async (signal) => {

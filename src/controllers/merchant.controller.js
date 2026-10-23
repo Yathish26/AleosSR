@@ -1,7 +1,7 @@
 import mongoose from 'mongoose'
 import BankVerification from '../models/BankVerification.js'
 import Member from '../models/Member.js'
-import Merchant, { generateMerchantId, MERCHANT_CATEGORIES } from '../models/Merchant.js'
+import Merchant, { generateMerchantId, getMasterMerchant, MERCHANT_CATEGORIES } from '../models/Merchant.js'
 import Redemption from '../models/Redemption.js'
 import { getSettings } from '../models/Setting.js'
 import Transaction from '../models/Transaction.js'
@@ -10,6 +10,7 @@ import WalletWithdrawal from '../models/WalletWithdrawal.js'
 import ApiError from '../utils/ApiError.js'
 import { escapeHtml } from '../utils/html.js'
 import { sendMail } from '../utils/mailer.js'
+import { signToken } from '../utils/token.js'
 import { getBankValidation, isRazorpayConfigured, startBankValidation } from '../utils/razorpay.js'
 import { consumeOtp, issueOtp } from './auth.controller.js'
 
@@ -434,7 +435,8 @@ export async function issuePoints(req, res) {
     }
     await consumeOtp(email, req.body.otp, 'reward')
     try {
-      member = await Member.create({ email, createdByMerchant: merchant._id })
+      // The merchant brought this member in, so it counts as the merchant's referral
+      member = await Member.create({ email, createdByMerchant: merchant._id, referredBy: merchant.merchantId })
     } catch (err) {
       // Joined at the same moment some other way — just use that account
       if (err.code !== 11000) throw err
@@ -456,6 +458,10 @@ export async function issuePoints(req, res) {
     )
   }
 
+  // Split the points: 80% member, 10% whoever referred them, 10% ALEOS (20% to ALEOS if no one referred them)
+  const [referrer, master] = await Promise.all([findReferrer(member), getMasterMerchant()])
+  const split = splitPoints(points, Boolean(referrer))
+
   let transaction
   try {
     transaction = await Transaction.create({
@@ -463,7 +469,13 @@ export async function issuePoints(req, res) {
       merchant: merchant._id,
       shopName: merchant.businessName,
       purchaseAmount: amount,
-      pointsEarned: points,
+      pointsEarned: split.member,
+      totalPoints: points,
+      referrerPoints: split.referrer,
+      masterPoints: split.master,
+      referrerCode: referrer?.code,
+      referrerMember: referrer?.member?._id,
+      referrerMerchant: referrer?.merchant?._id,
       discountPercent,
       walletDebit: points,
       walletBalanceAfter: updated.walletBalance,
@@ -472,26 +484,85 @@ export async function issuePoints(req, res) {
     await Merchant.updateOne({ _id: merchant._id }, { $inc: { walletBalance: points } }) // give the points back
     throw err
   }
+
   const credited = await Member.findByIdAndUpdate(
     member._id,
-    { $inc: { totalPoints: points, totalSpent: amount } },
+    { $inc: { totalPoints: split.member, totalSpent: amount } },
     { new: true },
   )
+  await creditReferrerAndMaster({ transaction, referrer, master, split, member, merchant })
 
   // Tell the customer. A failed email is logged but doesn't undo the points.
+  const emailArgs = { merchant, points: split.member, amount, totalPoints: credited.totalPoints, isNewMember }
   try {
     await sendMail({
       to: email,
-      subject: `You earned ${points} ALEOS points at ${merchant.businessName}`,
-      text: pointsEmailText({ merchant, points, amount, totalPoints: credited.totalPoints, isNewMember }),
-      html: pointsEmailHtml({ merchant, points, amount, totalPoints: credited.totalPoints, isNewMember }),
+      subject: `You earned ${split.member} ALEOS points at ${merchant.businessName}`,
+      text: pointsEmailText(emailArgs),
+      html: pointsEmailHtml(emailArgs),
     })
   } catch (err) {
     console.error(`Points email to ${email} failed: ${err.message}`)
   }
 
-  await transaction.populate('member', 'name email mobile')
-  res.status(201).json({ success: true, transaction, walletBalance: updated.walletBalance, newMember: isNewMember })
+  await transaction.populate([
+    { path: 'member', select: 'name email mobile' },
+    { path: 'referrerMember', select: 'name email' },
+    { path: 'referrerMerchant', select: 'businessName merchantId' },
+  ])
+  // The merchant's own wallet may have changed again if they referred this member or are the master account
+  const { walletBalance } = await Merchant.findById(merchant._id).select('walletBalance')
+  res.status(201).json({ success: true, transaction, walletBalance, newMember: isNewMember })
+}
+
+// Shares of every bill's points
+const MEMBER_SHARE = 0.8
+const REFERRER_SHARE = 0.1
+
+// 80 / 10 / 10 in whole points; ALEOS takes the referrer's share when there's no referrer, and any remainder
+// from rounding, so the three always add up to `total`
+function splitPoints(total, hasReferrer) {
+  const member = Math.floor(total * MEMBER_SHARE)
+  const referrer = hasReferrer ? Math.floor(total * REFERRER_SHARE) : 0
+  return { member, referrer, master: total - member - referrer }
+}
+
+// Who referred this member: { code, member } for a member's code, { code, merchant } for a shop's Merchant ID,
+// or null when there's no referrer, the code is ALEOS's own, or the referrer no longer exists
+async function findReferrer(member) {
+  const code = member.referredBy
+  if (!code) return null
+  const referringMember = await Member.findOne({ referralCode: code, _id: { $ne: member._id } })
+  if (referringMember) return { code, member: referringMember }
+  const referringMerchant = await Merchant.findOne({ merchantId: code })
+  if (referringMerchant && !referringMerchant.isMaster) return { code, merchant: referringMerchant }
+  return null
+}
+
+// Pays the referrer's and ALEOS's shares of a bill. Errors are logged, not thrown: the member already has their
+// points, and the bill's own record shows what each side should have received.
+async function creditReferrerAndMaster({ transaction, referrer, master, split, member, merchant }) {
+  try {
+    if (referrer?.member && split.referrer > 0) {
+      await Member.updateOne({ _id: referrer.member._id }, { $inc: { totalPoints: split.referrer } })
+      // Shows up in the referrer's own points list as a referral bonus
+      await Transaction.create({
+        member: referrer.member._id,
+        kind: 'referral',
+        shopName: merchant.businessName,
+        purchaseAmount: 0,
+        pointsEarned: split.referrer,
+        sourceTransaction: transaction._id,
+      })
+    } else if (referrer?.merchant && split.referrer > 0) {
+      await Merchant.updateOne({ _id: referrer.merchant._id }, { $inc: { walletBalance: split.referrer } })
+    }
+    if (split.master > 0) {
+      await Merchant.updateOne({ _id: master._id }, { $inc: { walletBalance: split.master } })
+    }
+  } catch (err) {
+    console.error(`Points split for bill ${transaction._id} (member ${member._id}) failed: ${err.message}`)
+  }
 }
 
 async function findApprovedMerchantById(id) {
@@ -591,6 +662,96 @@ export async function getMyMerchantReferrals(req, res) {
   res.json({ success: true, count: referrals.length, referrals })
 }
 
+// GET /merchants/me/passbook?limit=200 — every point in and out of the wallet, newest first, like a bank passbook.
+// Built from the records that moved the points. The balance column is worked backwards from today's wallet
+// balance, so it always ends on the real number.
+export async function getMyPassbook(req, res) {
+  const merchant = await Merchant.findById(req.user.id)
+  if (!merchant) throw new ApiError(404, 'Merchant not found')
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200))
+  const newest = { sort: { createdAt: -1 }, limit }
+  const memberName = (m) => (m ? m.name || m.email : 'a removed member')
+
+  const [payments, bills, withdrawals, redemptions, referralShares, masterShares] = await Promise.all([
+    WalletPayment.find({ merchant: merchant._id }, null, newest),
+    Transaction.find({ merchant: merchant._id, walletDebit: { $gt: 0 } }, null, { sort: { date: -1 }, limit }).populate(
+      'member',
+      'name email',
+    ),
+    WalletWithdrawal.find({ merchant: merchant._id }, null, newest),
+    Redemption.find({ merchant: merchant._id }, null, newest).populate('member', 'name email'),
+    Transaction.find({ referrerMerchant: merchant._id, referrerPoints: { $gt: 0 } }, null, {
+      sort: { date: -1 },
+      limit,
+    }).populate('member', 'name email'),
+    merchant.isMaster
+      ? Transaction.find({ masterPoints: { $gt: 0 } }, null, { sort: { date: -1 }, limit })
+      : [],
+  ])
+
+  const entries = [
+    ...payments.map((p) => ({
+      id: `pay-${p._id}`,
+      date: p.createdAt,
+      type: p.kind === 'signup' ? 'Sign-up top-up' : 'Recharge',
+      details: `Paid ₹${p.amount.toLocaleString('en-IN')} (incl. ₹${p.convenienceFee.toLocaleString('en-IN')} fee)`,
+      reference: p.reference,
+      credit: p.points,
+    })),
+    ...bills.map((t) => ({
+      id: `bill-${t._id}`,
+      date: t.date,
+      type: 'Points given',
+      details:
+        `${memberName(t.member)} · ₹${t.purchaseAmount.toLocaleString('en-IN')} bill` +
+        (t.totalPoints != null
+          ? ` · member ${t.pointsEarned}${t.referrerPoints ? `, referrer ${t.referrerPoints}` : ''}, ALEOS ${t.masterPoints ?? 0}`
+          : ''),
+      debit: t.walletDebit,
+    })),
+    ...withdrawals.map((w) => ({
+      id: `out-${w._id}`,
+      date: w.createdAt,
+      type: 'Withdrawal',
+      details: `₹${w.amount.toLocaleString('en-IN')} to ${w.bankName || 'bank'} ··${w.accountLast4}${w.fee ? ` (fee ₹${w.fee})` : ''}`,
+      reference: w.reference,
+      debit: w.points,
+    })),
+    ...redemptions.map((r) => ({
+      id: `used-${r._id}`,
+      date: r.createdAt,
+      type: 'Points used by member',
+      details: memberName(r.member),
+      credit: r.points,
+    })),
+    ...referralShares.map((t) => ({
+      id: `ref-${t._id}`,
+      date: t.date,
+      type: 'Referral share',
+      details: `${memberName(t.member)} (your referral) shopped at ${t.shopName}`,
+      credit: t.referrerPoints,
+    })),
+    ...masterShares.map((t) => ({
+      id: `aleos-${t._id}`,
+      date: t.date,
+      type: 'ALEOS share',
+      details: `From a bill at ${t.shopName}`,
+      credit: t.masterPoints,
+    })),
+  ]
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, limit)
+
+  // Walk back from today's balance: before a credit there was less, before a debit there was more
+  let balance = merchant.walletBalance ?? 0
+  for (const entry of entries) {
+    entry.balanceAfter = balance
+    balance += (entry.debit || 0) - (entry.credit || 0)
+  }
+
+  res.json({ success: true, walletBalance: merchant.walletBalance ?? 0, entries })
+}
+
 // GET /merchants/me/redemptions — points members used at this shop, newest first
 export async function getMyRedemptions(req, res) {
   const redemptions = await Redemption.find({ merchant: req.user.id }).populate('member', 'name email').sort({ createdAt: -1 })
@@ -649,6 +810,31 @@ export async function listMerchants(req, res) {
   res.json({ success: true, count: merchants.length, merchants })
 }
 
+// GET /admin/master-merchant — the company's ALEOS merchant account (created the first time), with a few totals
+export async function getMasterMerchantForAdmin(req, res) {
+  const merchant = await getMasterMerchant()
+  const [txTotals, referrals] = await Promise.all([
+    Transaction.aggregate([
+      { $match: { merchant: merchant._id } },
+      // totalPoints = everything the shop gave on the bill; older bills only have pointsEarned
+      { $group: { _id: null, count: { $sum: 1 }, points: { $sum: { $ifNull: ['$totalPoints', '$pointsEarned'] } } } },
+    ]),
+    Member.countDocuments({ referredBy: merchant.merchantId }),
+  ])
+  res.json({
+    success: true,
+    merchant,
+    summary: { pointsGiven: txTotals[0]?.points ?? 0, billsCount: txTotals[0]?.count ?? 0, referrals },
+  })
+}
+
+// POST /admin/master-merchant/session — a merchant login for the master account, so the admin can use the
+// normal merchant dashboard for it (no email OTP: the admin login already proves who this is)
+export async function openMasterMerchantSession(req, res) {
+  const merchant = await getMasterMerchant()
+  res.json({ success: true, token: signToken(merchant._id, 'merchant'), merchant })
+}
+
 // GET /admin/merchants/:id — everything about one merchant for the admin profile page
 export async function getMerchantProfile(req, res) {
   if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(404, 'Merchant not found')
@@ -661,7 +847,14 @@ export async function getMerchantProfile(req, res) {
       Transaction.find(byMerchant).populate('member', 'name email').sort({ date: -1 }).limit(20),
       Transaction.aggregate([
         { $match: byMerchant },
-        { $group: { _id: null, count: { $sum: 1 }, points: { $sum: '$pointsEarned' }, sales: { $sum: '$purchaseAmount' } } },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            points: { $sum: { $ifNull: ['$totalPoints', '$pointsEarned'] } },
+            sales: { $sum: '$purchaseAmount' },
+          },
+        },
       ]),
       Redemption.find(byMerchant).populate('member', 'name email').sort({ createdAt: -1 }).limit(20),
       Redemption.aggregate([{ $match: byMerchant }, { $group: { _id: null, count: { $sum: 1 }, points: { $sum: '$points' } } }]),
@@ -701,6 +894,7 @@ export async function getMerchantProfile(req, res) {
 export async function updateMerchantStatus(req, res) {
   const merchant = await Merchant.findById(req.params.id)
   if (!merchant) throw new ApiError(404, 'Merchant not found')
+  if (merchant.isMaster) throw new ApiError(400, 'The ALEOS master merchant is always approved')
   const wasApproved = merchant.status === 'approved'
   merchant.status = req.body.status
   // Only validate the status — older merchants were saved before trade license / bank details were required

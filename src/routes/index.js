@@ -11,21 +11,30 @@ import {
   updateAdminSettings,
 } from '../controllers/admin.controller.js'
 import { adminLogin, joinMember, loginMember, loginMerchant, sendOtp } from '../controllers/auth.controller.js'
-import { getMe, getMyReferrals, getMyTransactions, updateMe } from '../controllers/member.controller.js'
+import {
+  getMe,
+  getMyPassbook as getMemberPassbook,
+  getMyReferrals,
+  getMyTransactions,
+  updateMe,
+} from '../controllers/member.controller.js'
 import {
   getBankVerification,
   getCategories,
+  getMasterMerchantForAdmin,
   getMerchantProfile,
   getMyMerchant,
   getMyMerchantTransactions,
   getMyWalletPayments,
   getMyMerchantReferrals,
+  getMyPassbook,
   getMyRedemptions,
   getMyWithdrawals,
   issuePoints,
   listMerchants,
   paySignupFee,
   lookupCustomer,
+  openMasterMerchantSession,
   rechargeWallet,
   redeemPoints,
   registerMerchant,
@@ -77,6 +86,7 @@ router.get('/merchants/me/wallet/payments', merchantOnly, getMyWalletPayments)
 router.post('/merchants/me/wallet/recharge', merchantOnly, rechargeWallet) // { rechargeAmount } — min ₹1,000, DUMMY payment
 router.get('/merchants/me/customers', merchantOnly, lookupCustomer) // ?email= -> { name, email, totalPoints }
 router.get('/merchants/me/redemptions', merchantOnly, getMyRedemptions)
+router.get('/merchants/me/passbook', merchantOnly, getMyPassbook) // ?limit=200 — every wallet credit/debit with balance
 router.get('/merchants/me/referrals', merchantOnly, getMyMerchantReferrals) // members who joined with the Merchant ID
 router.post('/merchants/me/redemptions', merchantOnly, redeemPoints) // { email, points, otp? } — 202 { otpRequired } first
 router.get('/merchants/me/wallet/withdrawals', merchantOnly, getMyWithdrawals)
@@ -86,6 +96,7 @@ router.post('/merchants/me/wallet/withdraw', merchantOnly, withdrawPoints) // { 
 router.get('/members/me', memberOnly, getMe)
 router.patch('/members/me', memberOnly, updateMe) //    { name }
 router.get('/members/me/transactions', memberOnly, getMyTransactions)
+router.get('/members/me/passbook', memberOnly, getMemberPassbook) // ?limit=200 — points earned and used, with balance
 router.get('/members/me/referrals', memberOnly, getMyReferrals)
 
 // ---------- Admin (logged-in admin) ----------
@@ -97,6 +108,8 @@ router.get('/admin/members/:id', adminOnly, getMember)
 router.delete('/admin/members/:id', adminOnly, deleteMember)
 router.get('/admin/merchants', adminOnly, listMerchants) // ?status=pending
 router.get('/admin/merchants/:id', adminOnly, getMerchantProfile) // full details + activity for the profile page
+router.get('/admin/master-merchant', adminOnly, getMasterMerchantForAdmin) // the company's ALEOS merchant account
+router.post('/admin/master-merchant/session', adminOnly, openMasterMerchantSession) // -> merchant token for it
 router.patch('/admin/merchants/:id/status', adminOnly, updateMerchantStatus) // { status: 'approved' | 'rejected' }
 
 // ---------- Transactions / points (logged-in admin) ----------

@@ -26,6 +26,8 @@ const merchantSchema = new mongoose.Schema(
   {
     // Set at registration (and filled in for older merchants by ensureMerchantIds); unique index below
     merchantId: { type: String, uppercase: true, trim: true },
+    // The company's own "ALEOS" merchant account, run by the admin. Only one exists (getMasterMerchant).
+    isMaster: { type: Boolean, default: false },
     businessName: { type: String, required: true, trim: true },
     ownerName: { type: String, required: true, trim: true },
     category: { type: String, required: true, enum: { values: MERCHANT_CATEGORIES, message: 'Invalid category' } },
@@ -84,6 +86,40 @@ merchantSchema.index({ merchantId: 1 }, { unique: true, partialFilterExpression:
 const Merchant = mongoose.model('Merchant', merchantSchema)
 export default Merchant
 
+// Merchant ID of the master account — same as the root referral code, so members who join with it count as
+// the master merchant's referrals
+export const MASTER_MERCHANT_ID = 'ALEOS'
+
+// The company's own merchant account, created the first time it's needed. It has no bank/licence details
+// (those are for outside shops), so it's saved without the usual sign-up checks.
+export async function getMasterMerchant() {
+  const existing = await Merchant.findOne({ isMaster: true })
+  if (existing) return existing
+
+  const master = new Merchant({
+    isMaster: true,
+    merchantId: MASTER_MERCHANT_ID,
+    businessName: 'ALEOS',
+    ownerName: 'ALEOS Admin',
+    category: 'Other',
+    email: process.env.MASTER_MERCHANT_EMAIL?.trim() || 'master@aleos.local',
+    mobile: '0000000000',
+    status: 'approved',
+  })
+  try {
+    await master.save({ validateBeforeSave: false })
+    console.log(`Merchants: created the ALEOS master merchant (${MASTER_MERCHANT_ID})`)
+    return master
+  } catch (err) {
+    // Created at the same moment by another request
+    if (err.code === 11000) {
+      const created = await Merchant.findOne({ isMaster: true })
+      if (created) return created
+    }
+    throw err
+  }
+}
+
 // Gives every merchant registered before IDs existed their own merchantId. Safe to run on every start.
 export async function ensureMerchantIds() {
   await Merchant.createIndexes()
@@ -100,4 +136,22 @@ export async function ensureMerchantIds() {
     }
   }
   if (missing.length) console.log(`Merchants: gave ${missing.length} existing merchant(s) a merchant ID`)
+
+  // Members a merchant added before this was tracked count as that merchant's referrals too
+  const Member = mongoose.model('Member')
+  const merchantIds = await Member.distinct('createdByMerchant', {
+    createdByMerchant: { $exists: true },
+    referredBy: { $exists: false },
+  })
+  let linked = 0
+  for (const id of merchantIds) {
+    const merchant = await Merchant.findById(id).select('merchantId')
+    if (!merchant?.merchantId) continue
+    const result = await Member.updateMany(
+      { createdByMerchant: id, referredBy: { $exists: false } },
+      { $set: { referredBy: merchant.merchantId } },
+    )
+    linked += result.modifiedCount
+  }
+  if (linked) console.log(`Members: counted ${linked} merchant-added member(s) as that merchant's referrals`)
 }

@@ -24,7 +24,7 @@ const memberSchema = new mongoose.Schema(
     pincode: { type: String, trim: true, match: [/^\d{6}$/, 'Pincode must be a 6-digit number'] },
     referralCode: { type: String, unique: true, default: generateReferralCode },
     // Referral code used when this member joined: a member's code, or a merchant's Merchant ID
-    // (none for a member a merchant added while giving points)
+    // (also the Merchant ID for a member a merchant added while giving points)
     referredBy: { type: String, uppercase: true, trim: true },
     // Set when a merchant created this member while giving them points
     createdByMerchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant' },
