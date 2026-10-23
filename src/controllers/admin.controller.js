@@ -1,5 +1,6 @@
 import Member from '../models/Member.js'
 import Merchant from '../models/Merchant.js'
+import { getSettings } from '../models/Setting.js'
 import Transaction from '../models/Transaction.js'
 import ApiError from '../utils/ApiError.js'
 
@@ -61,6 +62,25 @@ export async function getMember(req, res) {
   ])
 
   res.json({ success: true, member, transactions, referrals })
+}
+
+// GET /admin/settings
+export async function getAdminSettings(req, res) {
+  res.json({ success: true, settings: await getSettings() })
+}
+
+// PATCH /admin/settings  { withdrawalFeePercent }
+export async function updateAdminSettings(req, res) {
+  const settings = await getSettings()
+  if (req.body.withdrawalFeePercent !== undefined) {
+    const percent = Number(req.body.withdrawalFeePercent)
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      throw new ApiError(400, 'Withdrawal fee must be between 0% and 100%')
+    }
+    settings.withdrawalFeePercent = Math.round(percent * 100) / 100
+  }
+  await settings.save()
+  res.json({ success: true, settings })
 }
 
 // DELETE /admin/members/:id

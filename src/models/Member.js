@@ -8,7 +8,8 @@ function generateReferralCode() {
 
 const memberSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true },
+    // Empty for a member a merchant added by email; they fill it in after logging in
+    name: { type: String, trim: true, default: '' },
     email: {
       type: String,
       required: true,
@@ -17,15 +18,16 @@ const memberSchema = new mongoose.Schema(
       lowercase: true,
       match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email'],
     },
-    mobile: {
-      type: String,
-      required: true,
-      unique: true,
-      match: [/^\d{10}$/, 'Mobile must be a 10-digit number'],
-    },
+    // Not set for a member a merchant added by email (unique index below skips those)
+    mobile: { type: String, match: [/^\d{10}$/, 'Mobile must be a 10-digit number'] },
+    address: { type: String, trim: true },
+    pincode: { type: String, trim: true, match: [/^\d{6}$/, 'Pincode must be a 6-digit number'] },
     referralCode: { type: String, unique: true, default: generateReferralCode },
-    // Referral code used when this member joined
-    referredBy: { type: String, required: true, uppercase: true, trim: true },
+    // Referral code used when this member joined: a member's code, or a merchant's Merchant ID
+    // (none for a member a merchant added while giving points)
+    referredBy: { type: String, uppercase: true, trim: true },
+    // Set when a merchant created this member while giving them points
+    createdByMerchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant' },
     totalPoints: { type: Number, default: 0, min: 0 },
     totalSpent: { type: Number, default: 0, min: 0 },
     isActive: { type: Boolean, default: true },
@@ -34,5 +36,19 @@ const memberSchema = new mongoose.Schema(
 )
 
 memberSchema.index({ referredBy: 1 })
+// Mobile numbers stay unique, but any number of members may have none
+memberSchema.index({ mobile: 1 }, { unique: true, partialFilterExpression: { mobile: { $type: 'string' } } })
 
-export default mongoose.model('Member', memberSchema)
+const Member = mongoose.model('Member', memberSchema)
+export default Member
+
+// Older databases have a plain unique index on mobile, which allows only ONE member without a mobile.
+// Swap it for the one above. Safe to run on every start: it does nothing once the index is updated.
+export async function ensureMemberIndexes() {
+  const indexes = await Member.collection.indexes().catch(() => []) // collection may not exist yet
+  if (indexes.some((i) => i.name === 'mobile_1' && !i.partialFilterExpression)) {
+    await Member.collection.dropIndex('mobile_1')
+    console.log('Members: replaced the mobile index so members without a mobile number are allowed')
+  }
+  await Member.createIndexes()
+}

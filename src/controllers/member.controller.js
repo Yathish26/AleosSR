@@ -17,7 +17,11 @@ export async function getMe(req, res) {
 // PATCH /members/me  { name }
 export async function updateMe(req, res) {
   const member = await getCurrentMember(req)
-  if (req.body.name !== undefined) member.name = req.body.name
+  if (req.body.name !== undefined) {
+    const name = String(req.body.name).trim()
+    if (!name) throw new ApiError(400, 'Name is required')
+    member.name = name
+  }
   await member.save()
   res.json({ success: true, member })
 }

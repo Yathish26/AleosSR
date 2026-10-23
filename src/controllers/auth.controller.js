@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
 import Member from '../models/Member.js'
+import Merchant from '../models/Merchant.js'
 import Otp from '../models/Otp.js'
 import ApiError from '../utils/ApiError.js'
+import { escapeHtml } from '../utils/html.js'
 import { isEmailConfigured, sendMail } from '../utils/mailer.js'
 import { signToken } from '../utils/token.js'
 
@@ -19,10 +21,11 @@ function normalizeEmail(email) {
 }
 
 // Checks the OTP for this email and deletes it once used. Throws if wrong or expired.
-async function consumeOtp(email, otp) {
+// Pass { keep: true } to check it without using it up (e.g. before a paid bank check, ahead of the real submit).
+export async function consumeOtp(email, otp, account = 'member', { keep = false } = {}) {
   if (!otp) throw new ApiError(400, 'OTP is required')
 
-  const record = await Otp.findOne({ email })
+  const record = await Otp.findOne({ email, account })
   if (!record || record.expiresAt < new Date()) throw new ApiError(400, 'OTP expired or not requested')
   if (record.attempts >= MAX_OTP_ATTEMPTS) throw new ApiError(429, 'Too many attempts, request a new OTP')
 
@@ -31,75 +34,103 @@ async function consumeOtp(email, otp) {
     await record.save()
     throw new ApiError(400, 'Invalid OTP')
   }
-  await record.deleteOne()
+  if (!keep) await record.deleteOne()
 }
 
-function otpEmailHtml(code, expiryMinutes) {
+function otpEmailHtml(code, expiryMinutes, intro) {
   return `
 <div style="font-family:Arial,Helvetica,sans-serif;max-width:420px;margin:0 auto;padding:24px;color:#0f172a">
   <div style="font-size:20px;font-weight:800;color:#1d4ed8;margin-bottom:16px">ALEOS</div>
-  <p style="margin:0 0 12px;font-size:15px">Your verification code is:</p>
+  <p style="margin:0 0 12px;font-size:15px">${escapeHtml(intro)}</p>
   <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#eff6ff;border-radius:12px;padding:16px;text-align:center">${code}</div>
   <p style="margin:16px 0 0;font-size:13px;color:#64748b">This code expires in ${expiryMinutes} minutes. If you didn't request it, you can ignore this email.</p>
 </div>`
 }
 
-// POST /auth/otp/send  { email, purpose: 'join' | 'login' }
+// Merchants can only log in once an admin has approved them
+async function findApprovedMerchant(email) {
+  const merchant = await Merchant.findOne({ email })
+  if (!merchant) throw new ApiError(404, 'No merchant found with this email. Please apply first.')
+  if (merchant.status === 'pending') throw new ApiError(403, 'Your application is still waiting for approval.')
+  if (merchant.status === 'rejected') throw new ApiError(403, 'Your merchant application was not approved.')
+  return merchant
+}
+
+// POST /auth/otp/send  { email, purpose: 'join' | 'login' | 'merchant-join' | 'merchant-login' }
 export async function sendOtp(req, res) {
   const email = normalizeEmail(req.body.email)
-  const purpose = req.body.purpose === 'login' ? 'login' : 'join'
+  const purpose = ['login', 'merchant-join', 'merchant-login'].includes(req.body.purpose) ? req.body.purpose : 'join'
+  const account = purpose.startsWith('merchant-') ? 'merchant' : 'member'
 
-  const exists = await Member.exists({ email })
-  if (purpose === 'join' && exists) throw new ApiError(409, 'This email is already registered. Please log in.')
-  if (purpose === 'login' && !exists) throw new ApiError(404, 'No member found with this email. Please join first.')
+  if (purpose === 'merchant-login') {
+    await findApprovedMerchant(email)
+  } else if (purpose === 'merchant-join') {
+    if (await Merchant.exists({ email })) throw new ApiError(409, 'A business is already registered with this email')
+  } else {
+    const exists = await Member.exists({ email })
+    if (purpose === 'join' && exists) throw new ApiError(409, 'This email is already registered. Please log in.')
+    if (purpose === 'login' && !exists) throw new ApiError(404, 'No member found with this email. Please join first.')
+  }
 
+  res.json({ success: true, ...(await issueOtp(email, account)) })
+}
+
+// Creates a fresh 6-digit code for this email + account and emails it. Returns { message, otp? } —
+// without an email provider, development gets the code back so the flow can be tested.
+export async function issueOtp(email, account, { intro = 'Your verification code is:' } = {}) {
   const code = crypto.randomInt(100000, 1000000).toString()
-  const expiryMinutes = Number(process.env.OTP_EXPIRY_MINUTES) || 5
+  // 15 by default: the merchant form needs the code for its bank check and payment before the final submit
+  const expiryMinutes = Number(process.env.OTP_EXPIRY_MINUTES) || 15
 
-  await Otp.deleteMany({ email })
-  await Otp.create({ email, code, expiresAt: new Date(Date.now() + expiryMinutes * 60 * 1000) })
+  await Otp.deleteMany({ email, account })
+  await Otp.create({ email, account, code, expiresAt: new Date(Date.now() + expiryMinutes * 60 * 1000) })
 
   try {
     await sendMail({
       to: email,
       subject: `${code} is your ALEOS verification code`,
-      text: `Your ALEOS verification code is ${code}. It expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.`,
-      html: otpEmailHtml(code, expiryMinutes),
+      text: `${intro} ${code}. It expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.`,
+      html: otpEmailHtml(code, expiryMinutes, intro),
     })
   } catch (err) {
     console.error(`OTP email to ${email} failed: ${err.message}`)
-    await Otp.deleteMany({ email })
+    await Otp.deleteMany({ email, account })
     throw new ApiError(502, 'Could not send the OTP email right now. Please try again in a minute.')
   }
 
-  res.json({
-    success: true,
+  return {
     message: `OTP sent to ${email}`,
-    // Without an email provider, show the code in development so the flow can be tested
     ...(!isEmailConfigured && process.env.NODE_ENV === 'development' && { otp: code }),
-  })
+  }
 }
 
-// POST /auth/member/join  { name, email, mobile, referralCode, otp }
+// POST /auth/member/join  { name, email, mobile, address, pincode, referralCode, otp }
 export async function joinMember(req, res) {
   const email = normalizeEmail(req.body.email)
   const name = String(req.body.name || '').trim()
   const mobile = String(req.body.mobile || '').trim()
+  const address = String(req.body.address || '').trim()
+  const pincode = String(req.body.pincode || '').trim()
   const referralCode = String(req.body.referralCode || '').trim().toUpperCase()
 
   if (!name) throw new ApiError(400, 'Name is required')
   if (!MOBILE_RE.test(mobile)) throw new ApiError(400, 'Please enter a valid 10-digit mobile number')
+  if (!address) throw new ApiError(400, 'Address is required')
+  if (!/^\d{6}$/.test(pincode)) throw new ApiError(400, 'Please enter a valid 6-digit pincode')
   if (!referralCode) throw new ApiError(400, 'Referral code is required')
 
-  if (referralCode !== rootReferralCode() && !(await Member.exists({ referralCode }))) {
-    throw new ApiError(400, 'Invalid referral code')
-  }
+  // A valid code is the root code, a member's own code, or an approved merchant's Merchant ID
+  const validCode =
+    referralCode === rootReferralCode() ||
+    (await Member.exists({ referralCode })) ||
+    (await Merchant.exists({ merchantId: referralCode, status: 'approved' }))
+  if (!validCode) throw new ApiError(400, 'Invalid referral code')
   if (await Member.exists({ email })) throw new ApiError(409, 'This email is already registered. Please log in.')
   if (await Member.exists({ mobile })) throw new ApiError(409, 'This mobile number is already registered')
 
   await consumeOtp(email, req.body.otp)
 
-  const member = await Member.create({ name, email, mobile, referredBy: referralCode })
+  const member = await Member.create({ name, email, mobile, address, pincode, referredBy: referralCode })
   res.status(201).json({ success: true, token: signToken(member._id, 'member'), member })
 }
 
@@ -111,6 +142,15 @@ export async function loginMember(req, res) {
 
   await consumeOtp(email, req.body.otp)
   res.json({ success: true, token: signToken(member._id, 'member'), member })
+}
+
+// POST /auth/merchant/login  { email, otp }
+export async function loginMerchant(req, res) {
+  const email = normalizeEmail(req.body.email)
+  const merchant = await findApprovedMerchant(email)
+
+  await consumeOtp(email, req.body.otp, 'merchant')
+  res.json({ success: true, token: signToken(merchant._id, 'merchant'), merchant })
 }
 
 // POST /auth/admin/login  { username, password }
