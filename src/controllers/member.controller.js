@@ -16,9 +16,11 @@ export async function getMe(req, res) {
 }
 
 // PATCH /members/me  { name }
+// The name can only be set once — for members a merchant added by email, who start without one
 export async function updateMe(req, res) {
   const member = await getCurrentMember(req)
   if (req.body.name !== undefined) {
+    if (member.name) throw new ApiError(400, "Your name is already set and can't be changed")
     const name = String(req.body.name).trim()
     if (!name) throw new ApiError(400, 'Name is required')
     member.name = name
@@ -33,16 +35,32 @@ export async function getMyTransactions(req, res) {
   res.json({ success: true, count: transactions.length, transactions })
 }
 
-// GET /members/me/passbook?limit=200 — points earned (credit) and used at shops (debit), newest first, with the
-// balance after each. The balance is worked backwards from today's points, so it always ends on the real number.
+// GET /members/me/passbook?page=1&limit=20 — points earned (credit) and used at shops (debit), newest first, with
+// the balance after each. The balance is worked backwards from today's points, so page 1 always ends on the real
+// number and every later page carries on from where the previous one stopped.
 export async function getMyPassbook(req, res) {
   const member = await getCurrentMember(req)
-  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200))
+  res.json({ success: true, ...(await buildMemberPassbook(member, req.query)) })
+}
 
-  const [earned, used] = await Promise.all([
-    Transaction.find({ member: member._id, pointsEarned: { $gt: 0 } }).sort({ date: -1 }).limit(limit),
-    Redemption.find({ member: member._id }).sort({ createdAt: -1 }).limit(limit),
+// One page of a member's points ledger — shared by the member's own dashboard and the admin member profile.
+// query: { page, limit } (as strings from the URL is fine)
+export async function buildMemberPassbook(member, query = {}) {
+  const limit = Math.min(100, Math.max(1, Number(query.limit) || 20))
+  const page = Math.max(1, Math.floor(Number(query.page)) || 1)
+  const skip = (page - 1) * limit
+
+  const earnedFilter = { member: member._id, pointsEarned: { $gt: 0 } }
+  const usedFilter = { member: member._id }
+
+  // The newest skip+limit rows of each kind are enough to know both this page and everything newer than it
+  const [earned, used, earnedCount, usedCount] = await Promise.all([
+    Transaction.find(earnedFilter).sort({ date: -1 }).limit(skip + limit),
+    Redemption.find(usedFilter).sort({ createdAt: -1 }).limit(skip + limit),
+    Transaction.countDocuments(earnedFilter),
+    Redemption.countDocuments(usedFilter),
   ])
+  const total = earnedCount + usedCount
 
   const entries = [
     ...earned.map((t) => ({
@@ -66,15 +84,23 @@ export async function getMyPassbook(req, res) {
     })),
   ]
     .sort((a, b) => new Date(b.date) - new Date(a.date))
-    .slice(0, limit)
+    .slice(0, skip + limit)
 
+  // Walk back from today's balance through every newer entry, then through this page
   let balance = member.totalPoints ?? 0
   for (const entry of entries) {
     entry.balanceAfter = balance
     balance += (entry.debit || 0) - (entry.credit || 0)
   }
 
-  res.json({ success: true, totalPoints: member.totalPoints ?? 0, entries })
+  return {
+    totalPoints: member.totalPoints ?? 0,
+    entries: entries.slice(skip),
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+  }
 }
 
 // GET /members/me/referrals

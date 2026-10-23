@@ -6,6 +6,7 @@ import {
   deleteMember,
   getAdminSettings,
   getMember,
+  getMemberPassbook,
   getStats,
   listMembers,
   updateAdminSettings,
@@ -13,7 +14,7 @@ import {
 import { adminLogin, joinMember, loginMember, loginMerchant, sendOtp } from '../controllers/auth.controller.js'
 import {
   getMe,
-  getMyPassbook as getMemberPassbook,
+  getMyPassbook as getMyMemberPassbook,
   getMyReferrals,
   getMyTransactions,
   updateMe,
@@ -94,9 +95,9 @@ router.post('/merchants/me/wallet/withdraw', merchantOnly, withdrawPoints) // { 
 
 // ---------- Member (logged-in member) ----------
 router.get('/members/me', memberOnly, getMe)
-router.patch('/members/me', memberOnly, updateMe) //    { name }
+router.patch('/members/me', memberOnly, updateMe) //    { name } — only while the member has no name yet
 router.get('/members/me/transactions', memberOnly, getMyTransactions)
-router.get('/members/me/passbook', memberOnly, getMemberPassbook) // ?limit=200 — points earned and used, with balance
+router.get('/members/me/passbook', memberOnly, getMyMemberPassbook) // ?page=1&limit=20 — points earned and used, with balance
 router.get('/members/me/referrals', memberOnly, getMyReferrals)
 
 // ---------- Admin (logged-in admin) ----------
@@ -104,9 +105,10 @@ router.get('/admin/stats', adminOnly, getStats)
 router.get('/admin/settings', adminOnly, getAdminSettings)
 router.patch('/admin/settings', adminOnly, updateAdminSettings) // { withdrawalFeePercent }
 router.get('/admin/members', adminOnly, listMembers) // ?search=&page=&limit=
-router.get('/admin/members/:id', adminOnly, getMember)
+router.get('/admin/members/:id', adminOnly, getMember) // details, totals, referrer and referrals for the profile page
+router.get('/admin/members/:id/passbook', adminOnly, getMemberPassbook) // ?page=1&limit=20 — the member's points ledger
 router.delete('/admin/members/:id', adminOnly, deleteMember)
-router.get('/admin/merchants', adminOnly, listMerchants) // ?status=pending
+router.get('/admin/merchants', adminOnly, listMerchants) // ?status=pending&search=&page=1&limit=20
 router.get('/admin/merchants/:id', adminOnly, getMerchantProfile) // full details + activity for the profile page
 router.get('/admin/master-merchant', adminOnly, getMasterMerchantForAdmin) // the company's ALEOS merchant account
 router.post('/admin/master-merchant/session', adminOnly, openMasterMerchantSession) // -> merchant token for it

@@ -1,14 +1,19 @@
 import mongoose from 'mongoose'
 import BankVerification from '../models/BankVerification.js'
 import Member from '../models/Member.js'
-import Merchant, { generateMerchantId, getMasterMerchant, MERCHANT_CATEGORIES } from '../models/Merchant.js'
+import Merchant, {
+  FSSAI_CATEGORIES,
+  generateMerchantId,
+  getMasterMerchant,
+  MERCHANT_CATEGORIES,
+} from '../models/Merchant.js'
 import Redemption from '../models/Redemption.js'
 import { getSettings } from '../models/Setting.js'
 import Transaction from '../models/Transaction.js'
 import WalletPayment from '../models/WalletPayment.js'
 import WalletWithdrawal from '../models/WalletWithdrawal.js'
 import ApiError from '../utils/ApiError.js'
-import { escapeHtml } from '../utils/html.js'
+import { escapeHtml, escapeRegex } from '../utils/html.js'
 import { sendMail } from '../utils/mailer.js'
 import { signToken } from '../utils/token.js'
 import { getBankValidation, isRazorpayConfigured, startBankValidation } from '../utils/razorpay.js'
@@ -26,14 +31,34 @@ const MIN_RECHARGE = 1000
 const CONVENIENCE_FEE_RATE = 0.03
 const POINTS_PER_RUPEE = 1
 
-// Works out what a recharge of `rechargeAmount` rupees costs and how many points it gives
-function priceRecharge(rechargeAmount) {
+// Sign-up only: the recharge is one of these, plus a one-time onboarding fee with 18% GST on it
+const SIGNUP_RECHARGE_OPTIONS = [1000, 2000, 3000]
+const ONBOARDING_FEE = 249
+const ONBOARDING_TAX_RATE = 0.18
+
+const toPaise = (n) => Math.round(n * 100) / 100
+
+// Works out what a recharge of `rechargeAmount` rupees costs and how many points it gives.
+// { signup: true } adds the onboarding fee + GST and only allows SIGNUP_RECHARGE_OPTIONS.
+function priceRecharge(rechargeAmount, { signup = false } = {}) {
   const value = Number(rechargeAmount)
+  if (signup && !SIGNUP_RECHARGE_OPTIONS.includes(value)) {
+    throw new ApiError(400, `Choose a recharge of ${SIGNUP_RECHARGE_OPTIONS.map((v) => `₹${v.toLocaleString('en-IN')}`).join(', ')}`)
+  }
   if (!Number.isInteger(value) || value < MIN_RECHARGE) {
     throw new ApiError(400, `Recharge must be a whole amount of at least ₹${MIN_RECHARGE.toLocaleString('en-IN')}`)
   }
-  const convenienceFee = Math.round(value * CONVENIENCE_FEE_RATE * 100) / 100
-  return { rechargeAmount: value, convenienceFee, amount: value + convenienceFee, points: value * POINTS_PER_RUPEE }
+  const convenienceFee = toPaise(value * CONVENIENCE_FEE_RATE)
+  const onboardingFee = signup ? ONBOARDING_FEE : 0
+  const onboardingTax = signup ? toPaise(ONBOARDING_FEE * ONBOARDING_TAX_RATE) : 0
+  return {
+    rechargeAmount: value,
+    convenienceFee,
+    onboardingFee,
+    onboardingTax,
+    amount: toPaise(value + convenienceFee + onboardingFee + onboardingTax),
+    points: value * POINTS_PER_RUPEE,
+  }
 }
 
 const dummyReference = () => `DUMMY-${Date.now().toString(36).toUpperCase()}`
@@ -60,7 +85,7 @@ async function pointsWithdrawnToday(merchantId) {
 
 // GET /merchants/categories
 export function getCategories(req, res) {
-  res.json({ success: true, categories: MERCHANT_CATEGORIES })
+  res.json({ success: true, categories: MERCHANT_CATEGORIES, fssaiCategories: FSSAI_CATEGORIES })
 }
 
 function bankVerificationJson(v) {
@@ -135,7 +160,8 @@ export async function startBankVerification(req, res) {
   res.status(201).json({ success: true, verification: bankVerificationJson(verification) })
 }
 
-// POST /merchants/signup-payment  { email, otp, rechargeAmount? }  (default ₹1,000)
+// POST /merchants/signup-payment  { email, otp, rechargeAmount? }  — ₹1,000 / ₹2,000 / ₹3,000 (default ₹1,000),
+// plus 3% convenience fee and the one-time ₹249 onboarding fee + 18% GST
 // DUMMY for now: records the payment as paid without charging anything. Replace with a Razorpay order +
 // signature check before going live.
 export async function paySignupFee(req, res) {
@@ -151,7 +177,7 @@ export async function paySignupFee(req, res) {
   const payment = await WalletPayment.create({
     kind: 'signup',
     email,
-    ...priceRecharge(req.body.rechargeAmount ?? MIN_RECHARGE),
+    ...priceRecharge(req.body.rechargeAmount ?? MIN_RECHARGE, { signup: true }),
     mode: 'dummy',
     reference: dummyReference(),
   })
@@ -288,7 +314,8 @@ export async function getBankVerification(req, res) {
 
 // POST /merchants/register
 //   { businessName, ownerName, category, email, mobile, address, city, googleBusinessLink?,
-//     tradeLicense, bankName, accountHolderName, ifsc, accountNumber, bankVerificationId, otp }
+//     tradeLicense?, fssaiNumber?, aadhaarNumber?, panNumber?, bankName, accountHolderName, ifsc, accountNumber,
+//     bankVerificationId, otp }
 export async function registerMerchant(req, res) {
   const { businessName, ownerName, category, mobile, address, city, tradeLicense, bankName, accountHolderName } =
     req.body
@@ -297,6 +324,8 @@ export async function registerMerchant(req, res) {
   const accountNumber = String(req.body.accountNumber || '').trim()
   // Empty string means "not provided" — store nothing rather than fail URL validation
   const googleBusinessLink = req.body.googleBusinessLink || undefined
+  // Optional, and only kept for food businesses; empty = not provided
+  const fssaiNumber = FSSAI_CATEGORIES.includes(category) ? String(req.body.fssaiNumber || '').trim() || undefined : undefined
 
   if (email && (await Merchant.exists({ email }))) {
     throw new ApiError(409, 'A business is already registered with this email')
@@ -331,7 +360,11 @@ export async function registerMerchant(req, res) {
     address,
     city,
     googleBusinessLink,
-    tradeLicense,
+    tradeLicense: String(tradeLicense || '').trim() || undefined, // optional
+    fssaiNumber,
+    // Optional; empty = not provided. Spaces in Aadhaar ("1234 5678 9012") are ignored.
+    aadhaarNumber: String(req.body.aadhaarNumber || '').replace(/\s+/g, '') || undefined,
+    panNumber: String(req.body.panNumber || '').trim().toUpperCase() || undefined,
     bankName,
     accountHolderName,
     ifsc,
@@ -669,6 +702,11 @@ export async function getMyPassbook(req, res) {
   const merchant = await Merchant.findById(req.user.id)
   if (!merchant) throw new ApiError(404, 'Merchant not found')
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200))
+  res.json({ success: true, walletBalance: merchant.walletBalance ?? 0, entries: await buildPassbook(merchant, limit) })
+}
+
+// The newest `limit` wallet movements of a merchant, each with the balance right after it
+async function buildPassbook(merchant, limit = 200) {
   const newest = { sort: { createdAt: -1 }, limit }
   const memberName = (m) => (m ? m.name || m.email : 'a removed member')
 
@@ -694,7 +732,11 @@ export async function getMyPassbook(req, res) {
       id: `pay-${p._id}`,
       date: p.createdAt,
       type: p.kind === 'signup' ? 'Sign-up top-up' : 'Recharge',
-      details: `Paid ₹${p.amount.toLocaleString('en-IN')} (incl. ₹${p.convenienceFee.toLocaleString('en-IN')} fee)`,
+      details:
+        `Paid ₹${p.amount.toLocaleString('en-IN')} (incl. ₹${p.convenienceFee.toLocaleString('en-IN')} fee` +
+        (p.onboardingFee
+          ? `, ₹${p.onboardingFee.toLocaleString('en-IN')} onboarding + ₹${(p.onboardingTax || 0).toLocaleString('en-IN')} GST)`
+          : ')'),
       reference: p.reference,
       credit: p.points,
     })),
@@ -748,8 +790,7 @@ export async function getMyPassbook(req, res) {
     entry.balanceAfter = balance
     balance += (entry.debit || 0) - (entry.credit || 0)
   }
-
-  res.json({ success: true, walletBalance: merchant.walletBalance ?? 0, entries })
+  return entries
 }
 
 // GET /merchants/me/redemptions — points members used at this shop, newest first
@@ -803,11 +844,40 @@ function pointsEmailHtml({ merchant, points, amount, totalPoints, isNewMember })
 </div>`
 }
 
-// GET /admin/merchants?status=pending
+// GET /admin/merchants?status=pending&search=&page=1&limit=20
+// search matches part of the business name, owner, city, email or Merchant ID, or part of the mobile number
 export async function listMerchants(req, res) {
   const filter = req.query.status ? { status: req.query.status } : {}
-  const merchants = await Merchant.find(filter).sort({ createdAt: -1 })
-  res.json({ success: true, count: merchants.length, merchants })
+  const search = String(req.query.search || '').trim().slice(0, 100)
+  if (search) {
+    const contains = { $regex: escapeRegex(search), $options: 'i' }
+    filter.$or = [
+      { businessName: contains },
+      { ownerName: contains },
+      { city: contains },
+      { email: contains },
+      { merchantId: contains },
+      ...(/^\d+$/.test(search) ? [{ mobile: { $regex: escapeRegex(search) } }] : []),
+    ]
+  }
+  const page = Math.max(1, Math.floor(Number(req.query.page)) || 1)
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20))
+  const [merchants, total] = await Promise.all([
+    Merchant.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Merchant.countDocuments(filter),
+  ])
+  res.json({
+    success: true,
+    count: merchants.length,
+    merchants,
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+  })
 }
 
 // GET /admin/master-merchant — the company's ALEOS merchant account (created the first time), with a few totals
@@ -856,9 +926,9 @@ export async function getMerchantProfile(req, res) {
           },
         },
       ]),
-      Redemption.find(byMerchant).populate('member', 'name email').sort({ createdAt: -1 }).limit(20),
+      Redemption.find(byMerchant).populate('member', 'name email').sort({ createdAt: -1 }).limit(200),
       Redemption.aggregate([{ $match: byMerchant }, { $group: { _id: null, count: { $sum: 1 }, points: { $sum: '$points' } } }]),
-      WalletWithdrawal.find(byMerchant).sort({ createdAt: -1 }).limit(20),
+      WalletWithdrawal.find(byMerchant).sort({ createdAt: -1 }).limit(200),
       WalletWithdrawal.aggregate([
         { $match: byMerchant },
         { $group: { _id: null, count: { $sum: 1 }, points: { $sum: '$points' }, amount: { $sum: '$amount' }, fees: { $sum: '$fee' } } },
@@ -887,6 +957,8 @@ export async function getMerchantProfile(req, res) {
     redemptions,
     withdrawals,
     payments,
+    // Same passbook the merchant sees on their own dashboard
+    passbook: await buildPassbook(merchant),
   })
 }
 

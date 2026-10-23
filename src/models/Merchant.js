@@ -22,6 +22,9 @@ export const MERCHANT_CATEGORIES = [
   'Other',
 ]
 
+// Food businesses, which may give an FSSAI licence number when applying
+export const FSSAI_CATEGORIES = ['Restaurant & Cafe', 'Grocery & Supermarket']
+
 const merchantSchema = new mongoose.Schema(
   {
     // Set at registration (and filled in for older merchants by ensureMerchantIds); unique index below
@@ -48,7 +51,18 @@ const merchantSchema = new mongoose.Schema(
       trim: true,
       match: [/^https?:\/\/\S+$/, 'Google Business link must be a valid URL starting with http:// or https://'],
     },
-    tradeLicense: { type: String, required: true, trim: true },
+    // Optional trade licence number
+    tradeLicense: { type: String, trim: true },
+    // Optional owner ID numbers. Aadhaar is shown masked (last 4 digits) on admin screens.
+    aadhaarNumber: { type: String, trim: true, match: [/^[2-9]\d{11}$/, 'Aadhaar number must be 12 digits'] },
+    panNumber: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      match: [/^[A-Z]{5}\d{4}[A-Z]$/, 'PAN must look like ABCDE1234F'],
+    },
+    // Optional FSSAI food licence number — only asked of FSSAI_CATEGORIES (restaurants, grocery)
+    fssaiNumber: { type: String, trim: true, match: [/^\d{14}$/, 'FSSAI number must be 14 digits'] },
     // Bank account the merchant's settlements go to
     bankName: { type: String, required: true, trim: true },
     accountHolderName: { type: String, required: true, trim: true },
