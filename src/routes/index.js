@@ -46,6 +46,7 @@ import {
 } from '../controllers/merchant.controller.js'
 import { createTransaction, deleteTransaction, listTransactions } from '../controllers/transaction.controller.js'
 import { protect } from '../middleware/auth.js'
+import version from '../version.js'
 
 const router = Router()
 
@@ -61,6 +62,7 @@ router.get('/health', (req, res) => {
     status: 'ok',
     db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     uptime: process.uptime(),
+    version
   })
 })
 
