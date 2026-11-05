@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import Member from '../models/Member.js'
 import Merchant from '../models/Merchant.js'
 import Redemption from '../models/Redemption.js'
+import SalesPerson from '../models/SalesPerson.js'
 import { getSettings } from '../models/Setting.js'
 import Transaction from '../models/Transaction.js'
 import ApiError from '../utils/ApiError.js'
@@ -142,6 +143,50 @@ export async function updateAdminSettings(req, res) {
   }
   await settings.save()
   res.json({ success: true, settings })
+}
+
+// GET /admin/sales-persons?search=&page=1&limit=20
+export async function listSalesPersons(req, res) {
+  const page = Math.max(1, Number(req.query.page) || 1)
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20))
+  const search = String(req.query.search || '').trim().slice(0, 100)
+
+  // Part of the name, or part of the mobile number
+  const filter = search
+    ? {
+        $or: [
+          { name: { $regex: escapeRegex(search), $options: 'i' } },
+          ...(/^\d+$/.test(search) ? [{ mobile: { $regex: escapeRegex(search) } }] : []),
+        ],
+      }
+    : {}
+
+  const [salesPersons, total] = await Promise.all([
+    SalesPerson.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+    SalesPerson.countDocuments(filter),
+  ])
+
+  res.json({ success: true, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)), salesPersons })
+}
+
+// POST /admin/sales-persons  { name, mobile }
+export async function createSalesPerson(req, res) {
+  const name = String(req.body.name ?? '').trim()
+  const mobile = String(req.body.mobile ?? '').replace(/\D/g, '')
+  if (!name) throw new ApiError(400, 'Name is required')
+  if (!/^\d{10}$/.test(mobile)) throw new ApiError(400, 'Mobile must be a 10-digit number')
+  if (await SalesPerson.exists({ mobile })) throw new ApiError(409, 'A sales person with this mobile number already exists')
+
+  const salesPerson = await SalesPerson.create({ name, mobile })
+  res.status(201).json({ success: true, salesPerson })
+}
+
+// DELETE /admin/sales-persons/:id
+export async function deleteSalesPerson(req, res) {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(404, 'Sales person not found')
+  const salesPerson = await SalesPerson.findByIdAndDelete(req.params.id)
+  if (!salesPerson) throw new ApiError(404, 'Sales person not found')
+  res.json({ success: true, message: 'Sales person removed' })
 }
 
 // DELETE /admin/members/:id

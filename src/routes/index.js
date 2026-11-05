@@ -3,12 +3,15 @@
 import { Router } from 'express'
 import mongoose from 'mongoose'
 import {
+  createSalesPerson,
   deleteMember,
+  deleteSalesPerson,
   getAdminSettings,
   getMember,
   getMemberPassbook,
   getStats,
   listMembers,
+  listSalesPersons,
   updateAdminSettings,
 } from '../controllers/admin.controller.js'
 import { adminLogin, joinMember, loginMember, loginMerchant, sendOtp } from '../controllers/auth.controller.js'
@@ -115,6 +118,9 @@ router.get('/admin/merchants/:id', adminOnly, getMerchantProfile) // full detail
 router.get('/admin/master-merchant', adminOnly, getMasterMerchantForAdmin) // the company's ALEOS merchant account
 router.post('/admin/master-merchant/session', adminOnly, openMasterMerchantSession) // -> merchant token for it
 router.patch('/admin/merchants/:id/status', adminOnly, updateMerchantStatus) // { status: 'approved' | 'rejected' }
+router.get('/admin/sales-persons', adminOnly, listSalesPersons) // ?search=&page=1&limit=20
+router.post('/admin/sales-persons', adminOnly, createSalesPerson) // { name, mobile }
+router.delete('/admin/sales-persons/:id', adminOnly, deleteSalesPerson)
 
 // ---------- Transactions / points (logged-in admin) ----------
 router.get('/transactions', adminOnly, listTransactions) // ?memberId=
