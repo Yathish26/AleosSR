@@ -77,7 +77,7 @@ router.post('/auth/merchant/login', loginMerchant) // { email, otp } — approve
 router.post('/auth/admin/login', adminLogin) //      { username, password }
 
 // ---------- Merchants (public) ----------
-router.get('/merchants/categories', getCategories)
+router.get('/merchants/categories', getCategories) // also { signupRechargeOptions } set by the admin
 router.post('/merchants/bank-verification', startBankVerification) // { email, otp, accountHolderName, ifsc, accountNumber } -> ₹1 check
 router.get('/merchants/bank-verification/:id', getBankVerification) // ?email= — poll until not 'pending'
 router.post('/merchants/signup-payment', paySignupFee) // { email, otp, rechargeAmount? } -> DUMMY: ₹1,000 + 3% fee = 1,000 pts
@@ -108,7 +108,7 @@ router.get('/members/me/referrals', memberOnly, getMyReferrals)
 // ---------- Admin (logged-in admin) ----------
 router.get('/admin/stats', adminOnly, getStats)
 router.get('/admin/settings', adminOnly, getAdminSettings)
-router.patch('/admin/settings', adminOnly, updateAdminSettings) // { withdrawalFeePercent }
+router.patch('/admin/settings', adminOnly, updateAdminSettings) // { withdrawalFeePercent?, signupRechargeOptions? }
 router.get('/admin/members', adminOnly, listMembers) // ?search=&page=&limit=
 router.get('/admin/members/:id', adminOnly, getMember) // details, totals, referrer and referrals for the profile page
 router.get('/admin/members/:id/passbook', adminOnly, getMemberPassbook) // ?page=1&limit=20 — the member's points ledger

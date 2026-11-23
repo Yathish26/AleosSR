@@ -3,7 +3,13 @@ import Member from '../models/Member.js'
 import Merchant from '../models/Merchant.js'
 import Redemption from '../models/Redemption.js'
 import SalesPerson from '../models/SalesPerson.js'
-import { getSettings } from '../models/Setting.js'
+import {
+  getSettings,
+  SIGNUP_RECHARGE_MAX,
+  SIGNUP_RECHARGE_MAX_OPTIONS,
+  SIGNUP_RECHARGE_MIN,
+  signupRechargeOptionsOf,
+} from '../models/Setting.js'
 import Transaction from '../models/Transaction.js'
 import ApiError from '../utils/ApiError.js'
 import { escapeRegex } from '../utils/html.js'
@@ -126,12 +132,17 @@ export async function getMemberPassbook(req, res) {
   res.json({ success: true, ...(await buildMemberPassbook(member, req.query)) })
 }
 
-// GET /admin/settings
-export async function getAdminSettings(req, res) {
-  res.json({ success: true, settings: await getSettings() })
+// Settings as sent to the admin dashboard (sign-up options filled in with the defaults if never saved)
+function settingsJson(settings) {
+  return { ...settings.toObject(), signupRechargeOptions: signupRechargeOptionsOf(settings) }
 }
 
-// PATCH /admin/settings  { withdrawalFeePercent }
+// GET /admin/settings
+export async function getAdminSettings(req, res) {
+  res.json({ success: true, settings: settingsJson(await getSettings()) })
+}
+
+// PATCH /admin/settings  { withdrawalFeePercent?, signupRechargeOptions?: [1000, 2000, 3000] }
 export async function updateAdminSettings(req, res) {
   const settings = await getSettings()
   if (req.body.withdrawalFeePercent !== undefined) {
@@ -141,8 +152,24 @@ export async function updateAdminSettings(req, res) {
     }
     settings.withdrawalFeePercent = Math.round(percent * 100) / 100
   }
+  if (req.body.signupRechargeOptions !== undefined) {
+    const raw = req.body.signupRechargeOptions
+    if (!Array.isArray(raw) || raw.length === 0) throw new ApiError(400, 'Add at least one sign-up recharge amount')
+    const values = raw.map(Number)
+    const min = SIGNUP_RECHARGE_MIN.toLocaleString('en-IN')
+    const max = SIGNUP_RECHARGE_MAX.toLocaleString('en-IN')
+    if (values.some((v) => !Number.isInteger(v) || v < SIGNUP_RECHARGE_MIN || v > SIGNUP_RECHARGE_MAX)) {
+      throw new ApiError(400, `Each sign-up recharge must be a whole amount from ₹${min} to ₹${max}`)
+    }
+    // Same amount twice is just one option; show them lowest first
+    const options = [...new Set(values)].sort((a, b) => a - b)
+    if (options.length > SIGNUP_RECHARGE_MAX_OPTIONS) {
+      throw new ApiError(400, `You can offer at most ${SIGNUP_RECHARGE_MAX_OPTIONS} sign-up recharge amounts`)
+    }
+    settings.signupRechargeOptions = options
+  }
   await settings.save()
-  res.json({ success: true, settings })
+  res.json({ success: true, settings: settingsJson(settings) })
 }
 
 // GET /admin/sales-persons?search=&page=1&limit=20

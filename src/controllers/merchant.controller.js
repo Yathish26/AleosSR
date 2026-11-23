@@ -8,7 +8,7 @@ import Merchant, {
   MERCHANT_CATEGORIES,
 } from '../models/Merchant.js'
 import Redemption from '../models/Redemption.js'
-import { getSettings } from '../models/Setting.js'
+import { getSettings, signupRechargeOptionsOf } from '../models/Setting.js'
 import Transaction from '../models/Transaction.js'
 import WalletPayment from '../models/WalletPayment.js'
 import WalletWithdrawal from '../models/WalletWithdrawal.js'
@@ -31,32 +31,24 @@ const MIN_RECHARGE = 1000
 const CONVENIENCE_FEE_RATE = 0.03
 const POINTS_PER_RUPEE = 1
 
-// Sign-up only: the recharge is one of these, plus a one-time onboarding fee with 18% GST on it
-const SIGNUP_RECHARGE_OPTIONS = [1000, 2000, 3000]
-const ONBOARDING_FEE = 249
-const ONBOARDING_TAX_RATE = 0.18
-
 const toPaise = (n) => Math.round(n * 100) / 100
 
 // Works out what a recharge of `rechargeAmount` rupees costs and how many points it gives.
-// { signup: true } adds the onboarding fee + GST and only allows SIGNUP_RECHARGE_OPTIONS.
-function priceRecharge(rechargeAmount, { signup = false } = {}) {
+// { signupOptions: [...] } is the sign-up case: only the admin's sign-up amounts (Setting.signupRechargeOptions)
+// are allowed. There is no onboarding fee — sign-up costs the same as a normal recharge.
+function priceRecharge(rechargeAmount, { signupOptions = null } = {}) {
   const value = Number(rechargeAmount)
-  if (signup && !SIGNUP_RECHARGE_OPTIONS.includes(value)) {
-    throw new ApiError(400, `Choose a recharge of ${SIGNUP_RECHARGE_OPTIONS.map((v) => `₹${v.toLocaleString('en-IN')}`).join(', ')}`)
+  if (signupOptions && !signupOptions.includes(value)) {
+    throw new ApiError(400, `Choose a recharge of ${signupOptions.map((v) => `₹${v.toLocaleString('en-IN')}`).join(', ')}`)
   }
   if (!Number.isInteger(value) || value < MIN_RECHARGE) {
     throw new ApiError(400, `Recharge must be a whole amount of at least ₹${MIN_RECHARGE.toLocaleString('en-IN')}`)
   }
   const convenienceFee = toPaise(value * CONVENIENCE_FEE_RATE)
-  const onboardingFee = signup ? ONBOARDING_FEE : 0
-  const onboardingTax = signup ? toPaise(ONBOARDING_FEE * ONBOARDING_TAX_RATE) : 0
   return {
     rechargeAmount: value,
     convenienceFee,
-    onboardingFee,
-    onboardingTax,
-    amount: toPaise(value + convenienceFee + onboardingFee + onboardingTax),
+    amount: toPaise(value + convenienceFee),
     points: value * POINTS_PER_RUPEE,
   }
 }
@@ -83,9 +75,14 @@ async function pointsWithdrawnToday(merchantId) {
   return row?.points || 0
 }
 
-// GET /merchants/categories
-export function getCategories(req, res) {
-  res.json({ success: true, categories: MERCHANT_CATEGORIES, fssaiCategories: FSSAI_CATEGORIES })
+// GET /merchants/categories — also sends the sign-up recharge choices the admin has set
+export async function getCategories(req, res) {
+  res.json({
+    success: true,
+    categories: MERCHANT_CATEGORIES,
+    fssaiCategories: FSSAI_CATEGORIES,
+    signupRechargeOptions: signupRechargeOptionsOf(await getSettings()),
+  })
 }
 
 function bankVerificationJson(v) {
@@ -160,8 +157,8 @@ export async function startBankVerification(req, res) {
   res.status(201).json({ success: true, verification: bankVerificationJson(verification) })
 }
 
-// POST /merchants/signup-payment  { email, otp, rechargeAmount? }  — ₹1,000 / ₹2,000 / ₹3,000 (default ₹1,000),
-// plus 3% convenience fee and the one-time ₹249 onboarding fee + 18% GST
+// POST /merchants/signup-payment  { email, otp, rechargeAmount? }  — one of the admin's sign-up options (default: the
+// lowest), plus the 3% convenience fee
 // DUMMY for now: records the payment as paid without charging anything. Replace with a Razorpay order +
 // signature check before going live.
 export async function paySignupFee(req, res) {
@@ -174,10 +171,11 @@ export async function paySignupFee(req, res) {
   const existing = await WalletPayment.findOne({ kind: 'signup', email, merchant: { $exists: false } })
   if (existing) return res.json({ success: true, payment: existing })
 
+  const signupOptions = signupRechargeOptionsOf(await getSettings())
   const payment = await WalletPayment.create({
     kind: 'signup',
     email,
-    ...priceRecharge(req.body.rechargeAmount ?? MIN_RECHARGE, { signup: true }),
+    ...priceRecharge(req.body.rechargeAmount ?? signupOptions[0], { signupOptions }),
     mode: 'dummy',
     reference: dummyReference(),
   })

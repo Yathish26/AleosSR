@@ -11,7 +11,7 @@ const walletPaymentSchema = new mongoose.Schema(
     merchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', index: true },
     rechargeAmount: { type: Number, required: true, min: 0 },
     convenienceFee: { type: Number, required: true, min: 0 },
-    // One-time onboarding fee and the GST on it — sign-up payments only
+    // One-time onboarding fee and the GST on it — no longer charged (always 0 now); kept for older sign-up payments
     onboardingFee: { type: Number, default: 0, min: 0 },
     onboardingTax: { type: Number, default: 0, min: 0 },
     // total paid = rechargeAmount + convenienceFee + onboardingFee + onboardingTax
