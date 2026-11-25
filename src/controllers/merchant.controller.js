@@ -489,7 +489,7 @@ export async function issuePoints(req, res) {
     )
   }
 
-  // Split the points: 80% member, 10% whoever referred them, 10% ALEOS (20% to ALEOS if no one referred them)
+  // Split the points: 70% member, 10% whoever referred them, 20% ALEOS (30% to ALEOS if no one referred them)
   const [referrer, master] = await Promise.all([findReferrer(member), getMasterMerchant()])
   const split = splitPoints(points, Boolean(referrer))
 
@@ -547,10 +547,10 @@ export async function issuePoints(req, res) {
 }
 
 // Shares of every bill's points
-const MEMBER_SHARE = 0.8
+const MEMBER_SHARE = 0.7
 const REFERRER_SHARE = 0.1
 
-// 80 / 10 / 10 in whole points; ALEOS takes the referrer's share when there's no referrer, and any remainder
+// 70 / 10 / 20 in whole points; ALEOS takes the referrer's share when there's no referrer, and any remainder
 // from rounding, so the three always add up to `total`
 function splitPoints(total, hasReferrer) {
   const member = Math.floor(total * MEMBER_SHARE)

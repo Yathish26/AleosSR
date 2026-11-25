@@ -8,7 +8,7 @@ const transactionSchema = new mongoose.Schema(
     kind: { type: String, enum: ['purchase', 'referral'], default: 'purchase' },
     // Set when a merchant issued the points from their dashboard; admin-entered ones have none
     merchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant' },
-    // How a merchant-issued bill's points were split (80 / 10 / 10). pointsEarned is the member's share;
+    // How a merchant-issued bill's points were split (70 / 10 / 20). pointsEarned is the member's share;
     // totalPoints is everything taken from the merchant's wallet.
     totalPoints: { type: Number, min: 0 },
     referrerPoints: { type: Number, min: 0 },
