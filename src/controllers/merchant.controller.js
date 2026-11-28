@@ -21,14 +21,12 @@ import { consumeOtp, issueOtp } from './auth.controller.js'
 
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/
 const ACCOUNT_NUMBER_RE = /^\d{9,18}$/
-// Each check costs real money, so cap how many one email can run
-const MAX_BANK_CHECKS_PER_EMAIL = 5
 
-// Wallet: merchants load points by paying ₹1 per point, plus a convenience fee on top.
-// Sign-up and every recharge must be at least ₹1,000 (= 1,000 points); the fee is 3% of the recharge amount
-// (₹1,000 → ₹1,030, ₹2,500 → ₹2,575), kept to the paisa.
+// Wallet: merchants load points by paying ₹1 per point, plus 18% GST on top (no convenience fee).
+// Sign-up and every recharge must be at least ₹1,000 (= 1,000 points); GST is 18% of the recharge amount
+// (₹1,000 → ₹1,180, ₹2,500 → ₹2,950), kept to the paisa.
 const MIN_RECHARGE = 1000
-const CONVENIENCE_FEE_RATE = 0.03
+const GST_RATE = 0.18
 const POINTS_PER_RUPEE = 1
 
 const toPaise = (n) => Math.round(n * 100) / 100
@@ -44,11 +42,12 @@ function priceRecharge(rechargeAmount, { signupOptions = null } = {}) {
   if (!Number.isInteger(value) || value < MIN_RECHARGE) {
     throw new ApiError(400, `Recharge must be a whole amount of at least ₹${MIN_RECHARGE.toLocaleString('en-IN')}`)
   }
-  const convenienceFee = toPaise(value * CONVENIENCE_FEE_RATE)
+  const gst = toPaise(value * GST_RATE)
   return {
     rechargeAmount: value,
-    convenienceFee,
-    amount: toPaise(value + convenienceFee),
+    convenienceFee: 0,
+    gst,
+    amount: toPaise(value + gst),
     points: value * POINTS_PER_RUPEE,
   }
 }
@@ -115,10 +114,6 @@ export async function startBankVerification(req, res) {
   const existing = await BankVerification.findOne({ email, ifsc, accountNumber, status: { $in: ['verified', 'pending'] } })
   if (existing) return res.json({ success: true, verification: bankVerificationJson(existing) })
 
-  if ((await BankVerification.countDocuments({ email })) >= MAX_BANK_CHECKS_PER_EMAIL) {
-    throw new ApiError(429, 'Too many bank verification attempts for this email. Please contact support.')
-  }
-
   if (!isRazorpayConfigured) {
     // DUMMY for now (no RazorpayX access yet): the check passes straight away. No razorpayValidationId = dummy.
     const verification = await BankVerification.create({
@@ -158,7 +153,7 @@ export async function startBankVerification(req, res) {
 }
 
 // POST /merchants/signup-payment  { email, otp, rechargeAmount? }  — one of the admin's sign-up options (default: the
-// lowest), plus the 3% convenience fee
+// lowest), plus 18% GST
 // DUMMY for now: records the payment as paid without charging anything. Replace with a Razorpay order +
 // signature check before going live.
 export async function paySignupFee(req, res) {
@@ -731,7 +726,10 @@ async function buildPassbook(merchant, limit = 200) {
       date: p.createdAt,
       type: p.kind === 'signup' ? 'Sign-up top-up' : 'Recharge',
       details:
-        `Paid ₹${p.amount.toLocaleString('en-IN')} (incl. ₹${p.convenienceFee.toLocaleString('en-IN')} fee` +
+        `Paid ₹${p.amount.toLocaleString('en-IN')} (incl. ` +
+        (p.gst
+          ? `₹${p.gst.toLocaleString('en-IN')} GST`
+          : `₹${(p.convenienceFee || 0).toLocaleString('en-IN')} fee`) +
         (p.onboardingFee
           ? `, ₹${p.onboardingFee.toLocaleString('en-IN')} onboarding + ₹${(p.onboardingTax || 0).toLocaleString('en-IN')} GST)`
           : ')'),
@@ -948,7 +946,8 @@ export async function getMerchantProfile(req, res) {
       amountWithdrawn: withdrawTotals[0]?.amount ?? 0,
       withdrawalFees: withdrawTotals[0]?.fees ?? 0,
       amountRecharged: payments.reduce((sum, p) => sum + p.rechargeAmount, 0),
-      rechargeFees: payments.reduce((sum, p) => sum + p.convenienceFee, 0),
+      rechargeFees: payments.reduce((sum, p) => sum + (p.convenienceFee || 0), 0),
+      rechargeGst: payments.reduce((sum, p) => sum + (p.gst || 0), 0),
       referrals,
     },
     transactions,

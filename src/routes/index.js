@@ -80,7 +80,7 @@ router.post('/auth/admin/login', adminLogin) //      { username, password }
 router.get('/merchants/categories', getCategories) // also { signupRechargeOptions } set by the admin
 router.post('/merchants/bank-verification', startBankVerification) // { email, otp, accountHolderName, ifsc, accountNumber } -> ₹1 check
 router.get('/merchants/bank-verification/:id', getBankVerification) // ?email= — poll until not 'pending'
-router.post('/merchants/signup-payment', paySignupFee) // { email, otp, rechargeAmount? } -> DUMMY: ₹1,000 + 3% fee = 1,000 pts
+router.post('/merchants/signup-payment', paySignupFee) // { email, otp, rechargeAmount? } -> DUMMY: ₹1,000 + 18% GST = 1,000 pts
 router.post('/merchants/register', registerMerchant) // { businessName, ..., accountHolderName, ifsc, accountNumber, bankVerificationId, signupPaymentId, otp }
 
 // ---------- Merchant (logged-in merchant) ----------
